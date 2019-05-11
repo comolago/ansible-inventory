@@ -1,0 +1,198 @@
+#!/usr/bin/env python
+from json import JSONEncoder
+import json
+
+def _default(self, obj):
+    return getattr(obj.__class__, "to_json", _default.default)(obj)
+
+_default.default = JSONEncoder.default
+JSONEncoder.default = _default
+
+class Group(object):
+  def __init__(self, name):
+    self.name = name
+    self.gvars = dict()
+    self.groups = []
+  def setGroupVar(self,n,v):
+    self.gvars[n]=v
+  def delGroupVar(self,n):
+    del self.gvars[n]
+  def addChildName(self,name):
+    if type(name) is Group:
+      n=name.name
+    elif type(name) is Host:
+      return False
+    else:
+      n=name
+    if n==self.name:
+      return False
+    self.groups.append(n)
+    return True
+  def delChildName(self,name):
+    self.groups.remove(name)
+  def __str__(self):
+    return '"group": "'+self.name+'", '+self.groupvars()+', '+self.children()
+  def groupvars(self):
+    return '"vars": '+json.dumps(self.gvars)
+  def children(self):
+    return '"children": '+json.dumps(self.groups)
+  def to_json(self):
+    return '{"group": "'+self.name+'", '+self.groupvars()+', '+self.children()+'}'
+
+class Host(object):
+  def __init__(self, name):
+    self.name = name
+    self.hvars = dict()
+    self.hgroups = []
+  def setHostVar(self,n,v):
+    self.hvars[n]=v
+  def delHostVar(self,n):
+    del self.hvars[n]
+  def __str__(self):
+    return '"Host": "'+self.name+'", "Hostvars": '+self.hostvars()+', "Groups": '+self.groups()
+  def hostvars(self):
+    return json.dumps(self.hvars)
+  def groups(self):
+    return json.dumps(self.hgroups)
+  def to_json(self):
+    return '{"Host": "'+self.name+'", "Hostvars": '+self.hostvars()+', "Groups": '+self.groups()+'}'
+  def addGroup(self,g):
+    self.hgroups.append(g)
+
+class Inventory(object):
+  def __init__(self):
+    self.hosts = []
+    self.groups = []
+    g=Group("all")
+    g.addChildName("ungrouped")
+    self.groups.append(g)
+  def processHostGroups(self,h):
+    i=0
+    if len(h.hgroups)==0:
+      h.addGroup("ungrouped")
+    while i < len(h.hgroups):
+      if self.hostGroupExists(h.name,h.hgroups[i]) == False:
+        g=Group(h.hgroups[i])
+        self.groups.append(g)
+      i+=1
+  def hostGroupExists(self,excludehost,group):
+    i=0
+    while i < len(self.hosts):
+      if self.hosts[i].name != excludehost:
+        j=0
+        while j < len(self.hosts[i].hgroups):
+          if self.hosts[i].hgroups[j] == group:
+            return True
+          j+=1
+      i+=1
+    return False
+
+  def addHost(self,h):
+    self.hosts.append(h)
+    self.processHostGroups(h)
+  def delHost(self,h):
+    j=self.getHost(h)
+    if j>=0:
+      i=0
+      while i < len(self.hosts[j].hgroups):
+        if self.hostGroupExists(h,self.hosts[j].hgroups[i]) == False:
+          del self.groups[self.getGroup(self.hosts[j].hgroups[i])]
+        i+=1
+      del self.hosts[j]
+      return True
+    return False
+  def getGroup(self,g):
+    i=0
+    while i < len(self.groups):
+      if self.groups[i].name == g:
+        return i
+      i+=1
+    return -1
+  def getHost(self,h):
+    i=0
+    while i < len(self.hosts):
+      if self.hosts[i].name == h:
+        return i
+      i+=1
+    return -1
+  def setGroupVar(self,g,n,v):
+    i=self.getGroup(g)
+    if i>=0:
+      self.groups[i].setGroupVar(n,v)
+      return True
+    return False
+  def delGroupVar(self,g,n):
+    i=self.getGroup(g)
+    if i>=0:
+      return self.groups[i].delGroupVar(n)
+    return False
+  def addGroup(self,group):
+    if type(group) is not Group:
+      g=Group(group)
+    else:
+      g=group
+    self.groups.append(g)
+  def addGroupChild(self,g,n):
+    i=self.getGroup(g)
+    if i>=0:
+      return self.groups[i].addChildName(n)
+    return False
+  def delGroupChild(self,g,n):
+    i=self.getGroup(g)
+    if i>=0:
+      return self.groups[i].delChildName(n)
+    return False
+  def __str__(self):
+    output='{'
+    for i in range(len(self.groups)):
+      output+='"'+self.groups[i].name+'": {'
+      if len(self.groups[i].groups)<=0 and self.groups[i].name != "all":
+        output+='"hosts": ['
+        j=0
+        found=0
+        while j < len(self.hosts):
+          k=0
+          while k < len(self.hosts[j].hgroups):
+             if self.hosts[j].hgroups[k]==self.groups[i].name:
+               if found>0:
+                 output+=', '
+               output+='"'+self.hosts[j].name+'"'
+               found+=1
+             k+=1
+          j+=1
+        output+=']'
+      else:
+        output+=self.groups[i].children()
+      if len(self.groups[i].gvars)>0:
+        output+=', '+self.groups[i].groupvars()
+      output+= '},'
+    output+='"_meta": { "hostvars": { '
+    i=0
+    while i < len(self.hosts):
+      if i>0:
+        output+=', '
+      output+='"'+self.hosts[i].name+'":'
+      output+=self.hosts[i].hostvars()        
+      i+=1
+    output+='}}' 
+    output+='}'
+    return output
+
+inventory = Inventory()
+h=Host("manager-node01.carcano.local")
+inventory.addHost(h)
+h=Host("ansible-node01.carcano.local")
+h.setHostVar("role","balancer")
+h.addGroup("site1")
+inventory.addHost(h)
+h=Host("ansible-node02.carcano.local")
+h.setHostVar("role","webserver")
+h.addGroup("site1")
+inventory.addHost(h)
+inventory.addGroup("ch")
+inventory.addGroupChild("ch","site1")
+inventory.setGroupVar("site1","dns","ns1.carcano.local,ns2.carcano.local")
+inventory.setGroupVar("ch","ntp","ntp.ch.carcano.local")
+inventory.setGroupVar("all","company","Carcano.SA")
+
+print inventory
